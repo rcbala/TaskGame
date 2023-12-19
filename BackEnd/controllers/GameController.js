@@ -1,127 +1,75 @@
 
+import express from "express"
+import pool from "../Database/dbconnect.js";
 
-import Player from "../Models/PlayerSchema.js";
-import PlayerChoice from "../Models/PlayerChoiceSchema.js";
-import Game from "../Models/GameSchema.js";
+const router = express.Router();
 
-const determineWinner = (player1Choice, player2Choice) => {
-  if (player1Choice === player2Choice) {
-    return "tie";
-  }
-
-  if (
-    (player1Choice === "stone" && player2Choice === "scissors") ||
-    (player1Choice === "scissors" && player2Choice === "paper") ||
-    (player1Choice === "paper" && player2Choice === "stone")
-  ) {
-    return "player1";
-  }
-
-  return "player2";
-};
-
-export const createGame = async (req, res) => {
+router.post("/createGame", async (req, res) => {
   try {
     const { player1Name, player2Name } = req.body;
-
-    const player1 = new Player({ name: player1Name, score: 0 });
-    const player2 = new Player({ name: player2Name, score: 0 });
-
-    await Promise.all([player1.save(), player2.save()]);
-
-    const newGame = new Game({
-      player1: player1._id,
-      player2: player2._id,
-      rounds: [],
-    });
-
-    await newGame.save();
-
-    res.json({ gameId: newGame._id });
-  } catch (error) {
-    console.error("Error creating a new game:", error);
-    res.status(500).json({ error: "Internal Server Error" });
-  }
-};
-
-export const makeMove = async (req, res) => {
-  try {
-    const { player1Choice, player2Choice } = req.body;
-    const gameId = req.params.gameId;
-
-    const game = await Game.findById(gameId).populate(
-      "player1 player2 player1Choice player2Choice"
+    const result = await pool.query(
+      "INSERT INTO games (player1_name, player2_name, player1_score, player2_score, winner_name) VALUES ($1, $2, 0, 0, null) RETURNING *",
+      [player1Name, player2Name]
     );
+    res.status(200).json({ success: true, game: result.rows[0] });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, error: "Internal Server Error" });
+  }
+});
 
-    const winner = determineWinner(player1Choice.choice, player2Choice.choice);
 
-    
-    const newPlayer1Choice = new PlayerChoice({
-      playerId: game.player1._id,
-      choice: player1Choice.choice,
-    });
+router.get("/getAllGames", async (req, res) => {
+  try {
+    const result = await pool.query("SELECT * FROM games");
+    const games = result.rows;
+    res.status(200).json({ success: true, games });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, error: "Internal Server Error" });
+  }
+});
 
-    const newPlayer2Choice = new PlayerChoice({
-      playerId: game.player2._id,
-      choice: player2Choice.choice,
-    });
 
-    await Promise.all([newPlayer1Choice.save(), newPlayer2Choice.save()]);
+router.post("/makeMove/:gameId", async (req, res) => {
+  try {
+    const { move, player } = req.body;
+    const { gameId } = req.params;
 
-    
-    game.rounds.push({
-      player1Choice: newPlayer1Choice._id,
-      player2Choice: newPlayer2Choice._id,
-      winner,
-    });
+    const game = await pool.query("SELECT * FROM games WHERE id = $1", [
+      gameId,
+    ]);
 
-  
-    game.player1Choice = newPlayer1Choice._id;
-    game.player2Choice = newPlayer2Choice._id;
-
-    if (winner === "player1") {
-      game.player1.score += 1;
-    } else if (winner === "player2") {
-      game.player2.score += 1;
+    if (game.rows.length === 0) {
+      res.status(404).json({ success: false, error: "Game not found" });
+      return;
     }
 
-    await game.save();
+    const currentPlayer = player === 1 ? "player1" : "player2";
 
-  
-    if (game.player1.score === 6 || game.player2.score === 6) {
-      res.json({
-        winner:
-          game.player1.score === 6 ? game.player1.name : game.player2.name,
-        player1Score: game.player1.score,
-        player2Score: game.player2.score,
-        player1Choice: player1Choice.choice,
-        player2Choice: player2Choice.choice,
-        rounds: game.rounds,
-      });
-    } else {
-      res.json({
-        winner,
-        player1Score: game.player1.score,
-        player2Score: game.player2.score,
-        player1Choice: player1Choice.choice,
-        player2Choice: player2Choice.choice,
-        rounds: game.rounds,
-      });
-    }
-  } catch (error) {
-    console.error("Error making a move:", error);
-    res.status(500).json({ error: "Internal Server Error" });
-  }
-};
-
-export const getAllGames = async (req, res) => {
-  try {
-    const games = await Game.find().populate(
-      "player1 player2 player1Choice player2Choice"
+    const result = await pool.query(
+      `UPDATE games SET ${currentPlayer}_score = ${currentPlayer}_score + 1 WHERE id = $1 RETURNING *`,
+      [gameId]
     );
-    res.json(games);
+
+    const updatedGame = result.rows[0];
+
+    if (updatedGame.player1_score === 6 || updatedGame.player2_score === 6) {
+      const winnerName =
+        updatedGame.player1_score === 6
+          ? updatedGame.player1_name
+          : updatedGame.player2_name;
+      await pool.query(
+        "UPDATE games SET winner_name = $1, status = $2 WHERE id = $3",
+        [winnerName, "completed", gameId]
+      );
+    }
+
+    res.status(200).json({ success: true, game: updatedGame });
   } catch (error) {
-    console.error("Error fetching games:", error);
-    res.status(500).json({ error: "Internal Server Error" });
+    console.error(error);
+    res.status(500).json({ success: false, error: "Internal Server Error" });
   }
-};
+});
+
+module.exports = router;
